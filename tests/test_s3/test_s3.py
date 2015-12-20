@@ -15,7 +15,7 @@ from boto.s3.connection import S3Connection
 from boto.s3.key import Key
 from freezegun import freeze_time
 import requests
-import tests.backport_assert_raises  # noqa
+#import tests.backport_assert_raises  # noqa
 from nose.tools import assert_raises
 
 import sure  # noqa

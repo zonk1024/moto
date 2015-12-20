@@ -10,7 +10,7 @@ from moto.core.responses import _TemplateEnvironmentMixin
 
 from .exceptions import BucketAlreadyExists, S3ClientError, InvalidPartOrder
 from .models import s3_backend, get_canned_acl, FakeGrantee, FakeGrant, FakeAcl
-from .utils import bucket_name_from_url, metadata_from_headers
+from .utils import metadata_from_headers
 from xml.dom import minidom
 
 REGION_URL_REGEX = r'\.s3-(.+?)\.amazonaws\.com'
@@ -21,13 +21,92 @@ def parse_key_name(pth):
     return pth.lstrip("/")
 
 
+class RequestObject(object):
+    """
+    A class to parse S3 URLs
+    """
+    bucket_name_regex = re.compile("(.+).s3(.*).amazonaws.com")
+    region_url_regex = r'\.s3-(.+?)\.amazonaws\.com'
+
+    def __init__(self, request, full_url, headers):
+        self.request = request
+        self.full_url = full_url
+        self.headers = headers
+
+    @property
+    def is_key_type(self):
+        return bool(self.key_name)
+
+    @property
+    def is_bucket_type(self):
+        return not self.is_key_type
+
+    @property
+    def method(self):
+        return self.request.method
+
+    @property
+    def parsed_url(self):
+        if not hasattr(self, '_parsed_url'):
+            self._parsed_url = urlparse(self.full_url)
+        return self._parsed_url
+
+    @property
+    def domain(self):
+        return self.parsed_url.netloc
+
+    @property
+    def stripped_domain(self):
+        return self.domain if not self.domain.startswith('www.') else self.domain[4:]
+
+    @property
+    def bucket_name_domain_regex(self):
+        return re.search(self.bucket_name_regex, self.stripped_domain)
+
+    @property
+    def bucket_name_in_domain(self):
+        return bool(self.bucket_name_domain_regex)
+
+    @property
+    def bucket_name_in_path(self):
+        return not self.bucket_name_in_domain
+
+    @property
+    def region(self):
+        region_match = re.search(self.region_url_regex, self.stripped_domain)
+
+    @property
+    def path(self):
+        return self.parsed_url.path.lstrip('/')
+
+    @property
+    def query(self):
+        return self.parsed_url.query
+
+    @property
+    def query_dict(self):
+        return parse_qs(self.query, keep_blank_values=True)
+
+    @property
+    def bucket_name(self):
+        if self.stripped_domain == 's3.amazonaws.com':
+            return self.path.lstrip('/').split('/')[0]
+        elif self.bucket_name_in_domain:
+            return self.bucket_name_domain_regex.groups()[0]
+        elif '.' in self.stripped_domain:
+            return self.stripped_domain.split('.')[0]
+
+    @property
+    def key_name(self):
+        if self.bucket_name_in_path:
+            return '/'.join(self.path.split('/')[1:])
+        return self.path
+
+
 class ResponseObject(_TemplateEnvironmentMixin):
-    def __init__(self, backend, bucket_name_from_url, parse_key_name,
-                 is_delete_keys=None):
+    def __init__(self, backend, is_delete_keys=None):
         super(ResponseObject, self).__init__()
         self.backend = backend
-        self.bucket_name_from_url = bucket_name_from_url
-        self.parse_key_name = parse_key_name
         if is_delete_keys:
             self.is_delete_keys = is_delete_keys
 
@@ -40,6 +119,15 @@ class ResponseObject(_TemplateEnvironmentMixin):
         all_buckets = self.backend.get_all_buckets()
         template = self.response_template(S3_ALL_BUCKETS)
         return template.render(buckets=all_buckets)
+
+    def routed_response(self, request, full_url, headers):
+        # TODO: This object should be passed in place of the data it contains
+        #       ... keep it DRY
+        s3_request = RequestObject(request, full_url, headers)
+        if s3_request.is_bucket_type:
+            return self.bucket_response(request, full_url, headers)
+        else:
+            return self.key_response(request, full_url, headers)
 
     def bucket_response(self, request, full_url, headers):
         try:
@@ -54,15 +142,12 @@ class ResponseObject(_TemplateEnvironmentMixin):
             return status_code, headers, response_content.encode("utf-8")
 
     def _bucket_response(self, request, full_url, headers):
-        parsed_url = urlparse(full_url)
-        querystring = parse_qs(parsed_url.query, keep_blank_values=True)
-        method = request.method
-        region_name = DEFAULT_REGION_NAME
-        region_match = re.search(REGION_URL_REGEX, full_url)
-        if region_match:
-            region_name = region_match.groups()[0]
+        s3_request = RequestObject(request, full_url, headers)
+        bucket_name = s3_request.bucket_name
+        method = s3_request.method
+        querystring = s3_request.query
+        region_name = s3_request.region
 
-        bucket_name = self.bucket_name_from_url(full_url)
         if not bucket_name:
             # If no bucket specified, list all buckets
             return self.all_buckets()
@@ -316,12 +401,11 @@ class ResponseObject(_TemplateEnvironmentMixin):
         return status_code, headers, response_content
 
     def _key_response(self, request, full_url, headers):
-        parsed_url = urlparse(full_url)
-        query = parse_qs(parsed_url.query, keep_blank_values=True)
-        method = request.method
-
-        key_name = self.parse_key_name(parsed_url.path)
-        bucket_name = self.bucket_name_from_url(full_url)
+        s3_request = RequestObject(request, full_url, headers)
+        bucket_name = s3_request.bucket_name
+        query = s3_request.query_dict
+        key_name = s3_request.key_name
+        method = s3_request.method
 
         if hasattr(request, 'body'):
             # Boto
@@ -526,7 +610,7 @@ class ResponseObject(_TemplateEnvironmentMixin):
         else:
             raise NotImplementedError("Method POST had only been implemented for multipart uploads and restore operations, so far")
 
-S3ResponseInstance = ResponseObject(s3_backend, bucket_name_from_url, parse_key_name)
+S3ResponseInstance = ResponseObject(s3_backend)
 
 S3_ALL_BUCKETS = """<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01">
   <Owner>

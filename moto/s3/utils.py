@@ -3,28 +3,8 @@ from __future__ import unicode_literals
 from boto.s3.key import Key
 import re
 import six
-from six.moves.urllib.parse import urlparse, unquote
+from six.moves.urllib.parse import unquote
 import sys
-
-bucket_name_regex = re.compile("(.+).s3(.*).amazonaws.com")
-
-
-def bucket_name_from_url(url):
-    domain = urlparse(url).netloc
-
-    if domain.startswith('www.'):
-        domain = domain[4:]
-
-    if 'amazonaws.com' in domain:
-        bucket_result = bucket_name_regex.search(domain)
-        if bucket_result:
-            return bucket_result.groups()[0]
-    else:
-        if '.' in domain:
-            return domain.split(".")[0]
-        else:
-            # No subdomain found.
-            return None
 
 
 def metadata_from_headers(headers):

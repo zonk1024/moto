@@ -6,6 +6,5 @@ url_bases = [
 ]
 
 url_paths = {
-    '{0}/$': S3ResponseInstance.bucket_response,
-    '{0}/(?P<key_name>.+)': S3ResponseInstance.key_response,
+    '{0}': S3ResponseInstance.routed_response,
 }
